@@ -1,0 +1,180 @@
+---
+title: "Optimisation and average distance in a square"
+author: "Johnny Wong"
+date: "29 December 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(microbenchmark)
+library(profvis)
+```
+
+## Introduction
+This file will discuss some brief ways of reducing computation time in R. It follows a few examples of good and bad code, goes through how to see which code is better, and gives a demonstration of the profvis tool used to diagnose code bottlenecks. The next few paragraphs is a short anecdote about self improvement, but uninterested readers can skip to the next section.
+
+No matter what you're doing, you always aim to be better. And depending on how good you already are, a success to you could mean a failure for another. I recently watched a video featuring professional tenpin bowlers explaining what a "bad strike" is. I was confused at first, because in my mind, a strike is a strike. 10 points is 10. The bowlers explained that the perfect strike has to hit the right spot between the pins, and make them fall over in a specific way. Then I thought about my favourite sport: basketball. 
+
+I've played for over a decade and consider myself fairly decent. And for me, just because a shot goes in, doesn't necessarily make it good. A perfect shot is shot with a fluid motion, follows a nice arc, and finally "swishes" through the net without touching the rim. Of course this is worth the same amount of points as an ugly looking shot that rattles around before dropping through the net, but it wouldn't be as satisfying. A beginner may not pick up on this. Their main focus would be on simply making the ball go through the hoop, and rightfully so. To someone who doesn't know basketball well, they may not understand how a made shot could be bad!
+
+In basketball, the concept of a bad make is most notably observed through the bank shot, where the ball bounces off the backboard into the basket. There are certain scenarios where players deliberately do this, mainly shots quite close to the basket. But most of the time, basketball shots are aimed directly at the basket, and not meant to bounce of the backboard. If a player "banks" in a shot from further away, surrounding players may question whether it was intentional. Although it's worth the same amount of points, it may say something about the skill level of the player who made the shot. Did they mean to hit the backboard? Or did they simply miss the basket so badly that it accidentally went in anyways?
+A shooter may yell "bank!" before shooting the ball to signify that they intend to hit the backboard. This concept is so ingrained into basketball culture, that if you don't yell "bank!" before making a bank shot, other players may call you out on it.
+
+Everyone would be able to draw their own examples of this phenomenon. But I find that people (at least me) are not great at recognising that it exists. When programming, I'm usually happy whenever the code does what I want it to. Recently, I've realised that just because it works, doesn't mean it work well. In some respects, I have transitioned from being happy with the shot going in, to trying to make the shot go in the right way. Here, I will discuss a few examples of how a working piece of code can be drastically improved to reduce computation time.
+
+## The toy problem - average distance between random points in a unit square
+I'm not sure where I first saw this problem, but I like it because it's deceptively simple. Suppose you have a unit square. If you pick two random points (by picking random x and y coordinates from a uniform distribution), what is the expected distance between these points? While it is not too difficult to construct a simple solution in the form of double integrals, solving it analytically is not trivial. I won't go into the analytical solution, but it can be found [here](https://mindyourdecisions.com/blog/2016/07/03/distance-between-two-random-points-in-a-square-sunday-puzzle/).
+
+What I'm more interested for the purpose of this article, is an empirical solution calculated through many simulations of this scenario. Below is a nice and clear simulation of the problem.
+
+```{r, inefficient}
+simulate_distance <- function(n_sim){
+  avg_dist <- NULL
+  for (i in 1:n_sim){
+    x1 <- runif(1)
+    x2 <- runif(1)
+    y1 <- runif(1)
+    y2 <- runif(1)
+    avg_dist[i] <- ((x1 - x2)^2 + (y1 - y2)^2)^0.5
+  }
+  return(mean(avg_dist))
+}
+
+simulate_distance(10000)
+```
+If you're looking above and thinking "well I guess it works but why did you do it like that?", the answer is that I wanted to demonstrate how a piece of code could be considered bad even though it does what it's meant to.
+
+Here are the main reasons this code is bad:
+
+* Using a for loop unnecessarily
+* Calling each random number individually instead of with runif(4)
+* Growing the vector
+* Using ^0.5 instead of sqrt()
+
+Below is a much better piece of code with the above flaws taken care of:
+```{r, optimised}
+simulate_distance_optim <- function(n_sim){
+  res_matrix <- matrix(runif(n_sim * 4), ncol = 4) # stores the (x, y) of each sim
+  colnames(res_matrix) <- c('x1', 'x2', 'y1', 'y2')
+  avg_dist_v <- sqrt((res_matrix[, 1] - res_matrix[, 2])^2 +
+                       (res_matrix[, 3] - res_matrix[, 4])^2)
+  avg_dist = mean(avg_dist_v)
+  return(avg_dist)
+}
+
+simulate_distance_optim(10000)
+```
+As a side note, matrices should be used whenever possible as it speeds up computation compared to dataframes. However matrices must all contain the same data type.
+
+# Comparing computation time
+
+At first glance, the above code may not seem better. In fact I would argue that it is more confusing to decipher. This is because it does not spell out each step, and rather takes advantage of vectorisation, and minimises function calls. However once we time each method, it is clear to see that the second method is much much quicker.
+
+```{r, system.time}
+n <- 100000
+system.time(simulate_distance(n))
+system.time(simulate_distance_optim(n))
+```
+
+# Microbenchmark
+The "microbenchmark" library has a useful tool to directly compare the computation time of two functions in a more user friendly manner. It automatically runs each function 100 times by default (this can be changed) and returns statistics comparing the mean and variance of both functions.
+
+```{r, microbenchmark}
+library(microbenchmark)
+n <- 100
+microbenchmark(simulate_distance(n),
+               simulate_distance_optim(n))
+```
+
+# 4 x runif(1) vs runif(4)
+One of the changes between the codes is taking advantage of runif's ability to generate multiple random numbers. As seen below, runif(4) is significantly faster than looping over runif(1) 4 times
+```{r, runif}
+call_rand <- function(n){
+  for (i in 1:n){
+    runif(1)
+  }
+}
+
+microbenchmark(call_rand(4), runif(4))
+```
+To explore this concept further, let's compare this for different values of n. We see that it seems that the relative time taken increases logarithmically. When generating 20 random numbers, it is about 15 times slower, about 30 times slower when generating 60, and about 35 times slower when generating 100.
+```{r}
+test_matrix <- matrix(ncol = 2, nrow = 100) # Initialise empty matrix
+
+for (i in 1:100){
+  res <- microbenchmark(runif(i), call_rand(i))
+  test_matrix[i, 1] <- i
+  test_matrix[i, 2] <- mean(res$time[res$expr != 'runif(i)'])/mean(res$time[res$expr == 'runif(i)'])
+}
+plot(test_matrix,
+     xlab = 'Number of random numbers generated',
+     ylab = 'Relative time of slower algorithm'
+)
+
+```
+
+We can also explore the complexity of the runif(n) function. It looks linear. The pattern is quite
+```{r}
+test_matrix <- matrix(ncol = 2, nrow = 100) # Initialise empty matrix
+
+for (i in 1:100){
+  res <- microbenchmark(runif(1), runif(i))
+  test_matrix[i, 1] <- i
+  test_matrix[i, 2] <- mean(res$time[res$expr != 'runif(1)'])/mean(res$time[res$expr == 'runif(1)'])
+}
+plot(test_matrix,
+     xlab = 'Number of randon numbers generated',
+     ylab = 'Relative time taken'
+)
+
+```
+
+# Using sqrt()
+Even something as simply as using the sqrt() function instead of ^0.5 makes a big different computationally, even though they are the exact same mathematically
+```{r, sqrt()}
+## Testing ^0.5 vs sqrt
+test <- 300
+microbenchmark(test^0.5, sqrt(test))
+```
+
+# Vector growing
+This shows that by simply initialising a vector to its final size and filling in its entries, you can massively reduce computation time. Where possible, avoid changing the size of data structures in any program.
+```{r, vector growing}
+grow_vector <- function(size){
+  x <- NULL
+  for (i in 1:size){
+    x[i] <- 1
+  }
+  return(x)
+}
+
+fill_vector <- function(size){
+  x <- vector('numeric', size)
+  for (i in 1:size){
+    x[i] <- 1
+  }
+    return(x)
+}
+
+microbenchmark(grow_vector(10000),
+               fill_vector(10000))
+
+```
+
+## profvis
+Another useful library is "profvis", this will break down each line of code and reveal how much time is spent on executing that line. From there, you can diagnose any bottlenecks and know which part of the code to focus on if you're trying to streamline the execution time.
+Unfortunately it doesn't look like it works in markdown.
+
+```{r, eval = false}
+n_sim <- 10000
+# Profvis will show the relative speed of each line of code
+profvis({
+  res_matrix <- matrix(runif(n_sim * 4), ncol = 4)
+  colnames(res_matrix) <- c('x1', 'x2', 'y1', 'y2')
+  avg_dist_v <- sqrt((res_matrix[, 1] - res_matrix[, 2])^2 +
+                     (res_matrix[, 3] - res_matrix[, 4])^2)
+  avg_dist = mean(avg_dist_v)
+  print(avg_dist)
+})
+```
